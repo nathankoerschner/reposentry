@@ -10,7 +10,7 @@ resource "google_pubsub_subscription" "worker_push" {
   topic = google_pubsub_topic.scan_jobs.id
 
   push_config {
-    push_endpoint = "${google_cloud_run_v2_service.worker.uri}/worker/scan"
+    push_endpoint = "${google_cloud_run_v2_service.worker.uri}/scan"
 
     oidc_token {
       service_account_email = google_service_account.pubsub_invoker.email
