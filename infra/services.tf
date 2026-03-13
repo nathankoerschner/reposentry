@@ -80,6 +80,11 @@ resource "google_cloud_run_v2_service" "backend" {
       }
 
       env {
+        name  = "CORS_ALLOWED_ORIGIN_REGEX"
+        value = "https://zeropath-frontend(?:-[a-z0-9]+)+(?:\\.[a-z0-9-]+)?\\.run\\.app"
+      }
+
+      env {
         name = "DATABASE_URL"
         value_source {
           secret_key_ref {

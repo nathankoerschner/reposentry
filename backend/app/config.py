@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # HTTP / CORS
     cors_allowed_origins: str = "http://localhost:5173"
+    cors_allowed_origin_regex: str = ""
 
     # General
     environment: str = "development"
