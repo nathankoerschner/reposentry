@@ -19,6 +19,7 @@ from app.models.user import User
 from app.schemas.findings import FindingOccurrenceResponse
 from app.schemas.scans import ScanFileResponse, ScanResponse, ScanSummaryResponse
 from app.services.github_deeplink import enrich_findings_with_deeplinks
+from app.services.severity_sorting import sort_occurrences_by_severity_desc
 
 logger = logging.getLogger(__name__)
 
@@ -176,4 +177,5 @@ async def get_scan_findings(
     scan = _get_user_scan(db, scan_id, user)
     repo = _get_user_repository(db, scan.repository_id, user)
     occurrences = db.query(FindingOccurrence).filter(FindingOccurrence.scan_id == scan_id).all()
-    return enrich_findings_with_deeplinks(occurrences, scan, repo)
+    sorted_occurrences = sort_occurrences_by_severity_desc(occurrences)
+    return enrich_findings_with_deeplinks(sorted_occurrences, scan, repo)

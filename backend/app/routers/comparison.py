@@ -13,6 +13,7 @@ from app.models.scan import Scan
 from app.models.user import User
 from app.schemas.comparison import ComparisonResponse
 from app.services.github_deeplink import enrich_findings_with_deeplinks
+from app.services.severity_sorting import sort_occurrences_by_severity_desc
 
 router = APIRouter(tags=["comparison"])
 
@@ -58,7 +59,19 @@ async def compare_scans(
     return ComparisonResponse(
         base_scan_id=base_scan_id,
         target_scan_id=target_scan_id,
-        new_findings=enrich_findings_with_deeplinks(new_findings_raw, target_scan, repo),
-        fixed_findings=enrich_findings_with_deeplinks(fixed_findings_raw, base_scan, repo),
-        persisting_findings=enrich_findings_with_deeplinks(persisting_findings_raw, target_scan, repo),
+        new_findings=enrich_findings_with_deeplinks(
+            sort_occurrences_by_severity_desc(new_findings_raw),
+            target_scan,
+            repo,
+        ),
+        fixed_findings=enrich_findings_with_deeplinks(
+            sort_occurrences_by_severity_desc(fixed_findings_raw),
+            base_scan,
+            repo,
+        ),
+        persisting_findings=enrich_findings_with_deeplinks(
+            sort_occurrences_by_severity_desc(persisting_findings_raw),
+            target_scan,
+            repo,
+        ),
     )

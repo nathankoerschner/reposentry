@@ -14,6 +14,7 @@ import type {
 } from "../api";
 import { FindingCard } from "../components/FindingCard";
 import { StatusBadge } from "../components/StatusBadge";
+import { sortFindingsBySeverity } from "../severity";
 import { AlertCircle, ArrowLeft, LoaderCircle } from "lucide-react";
 
 const POLL_INTERVAL_MS = 3000;
@@ -58,7 +59,7 @@ export function ScanDetailPage() {
 
         setFiles(scanFiles);
         setRepo(repoResult);
-        setFindings(findingResults);
+        setFindings(sortFindingsBySeverity(findingResults));
 
         if (currentScan.status === "queued" || currentScan.status === "running") {
           timeoutId = window.setTimeout(() => {
