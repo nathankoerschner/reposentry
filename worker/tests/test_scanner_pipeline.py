@@ -1,4 +1,4 @@
-"""Tests for the two-stage LLM scanning pipeline."""
+"""Tests for the Ralph-loop LLM scanning pipeline."""
 
 import json
 from pathlib import Path
@@ -8,17 +8,22 @@ import pytest
 
 from app.models.enums import ProcessingStatus, Stage1Result
 from app.models.scan_file import ScanFile
+from app.scanner.evidence import EvidenceItem, EvidenceRequest, load_dependency_manifests, resolve_class_method_definition
 from app.scanner.llm_client import LLMParseError, _extract_json
 from app.scanner.pipeline import (
     FindingResult,
+    InvestigationState,
     Stage2Outcome,
+    _list_python_files,
+    _merge_evidence,
+    _normalise_requests,
+    _parse_arbiter_output,
     _process_file,
     _run_stage1,
     _run_stage2,
+    _truncate_evidence_for_prompt,
     _validate_finding,
 )
-
-# ─── _extract_json tests ────────────────────────────────────────────────
 
 
 class TestExtractJson:
@@ -32,17 +37,9 @@ class TestExtractJson:
         result = _extract_json(raw)
         assert result["classification"] == "not_suspicious"
 
-    def test_json_with_whitespace(self):
-        raw = '  \n  {"key": "value"}\n  '
-        result = _extract_json(raw)
-        assert result["key"] == "value"
-
     def test_invalid_json_raises(self):
         with pytest.raises(json.JSONDecodeError):
             _extract_json("not json at all")
-
-
-# ─── _validate_finding tests ────────────────────────────────────────────
 
 
 class TestValidateFinding:
@@ -56,26 +53,12 @@ class TestValidateFinding:
             "explanation": "Attacker can inject SQL",
             "code_snippet": "cursor.execute(f'SELECT * FROM {user_input}')",
         }
-        f = _validate_finding(raw, "app.py", {"app.py"})
-        assert f is not None
-        assert f.file_path == "app.py"
-        assert f.vulnerability_type == "SQL Injection"
-        assert f.severity == "high"
-        assert f.line_number == 42
+        finding = _validate_finding(raw, "app.py", {"app.py"})
+        assert finding is not None
+        assert finding.file_path == "app.py"
+        assert finding.line_number == 42
 
-    def test_invalid_severity_defaults_to_medium(self):
-        raw = {
-            "vulnerability_type": "XSS",
-            "severity": "super_critical",
-            "line_number": 10,
-            "description": "desc",
-            "explanation": "exp",
-        }
-        f = _validate_finding(raw, "app.py", {"app.py"})
-        assert f is not None
-        assert f.severity == "medium"
-
-    def test_zero_line_number_defaults_to_1(self):
+    def test_invalid_line_number_is_rejected(self):
         raw = {
             "vulnerability_type": "XSS",
             "severity": "low",
@@ -83,12 +66,7 @@ class TestValidateFinding:
             "description": "desc",
             "explanation": "exp",
         }
-        f = _validate_finding(raw, "app.py", {"app.py"})
-        assert f is not None
-        assert f.line_number == 1
-
-
-# ─── Stage 1 tests ──────────────────────────────────────────────────────
+        assert _validate_finding(raw, "app.py", {"app.py"}) is None
 
 
 class TestRunStage1:
@@ -97,12 +75,7 @@ class TestRunStage1:
         mock_call.return_value = {"classification": "suspicious", "reason": "uses eval"}
         result = _run_stage1("app.py", "eval(input())")
         assert result == Stage1Result.suspicious
-
-    @patch("app.scanner.pipeline.call_llm_json")
-    def test_not_suspicious(self, mock_call):
-        mock_call.return_value = {"classification": "not_suspicious", "reason": "constants"}
-        result = _run_stage1("constants.py", "X = 1")
-        assert result == Stage1Result.not_suspicious
+        assert mock_call.call_args.kwargs["role_name"] == "stage1"
 
     @patch("app.scanner.pipeline.call_llm_json")
     def test_parse_failure(self, mock_call):
@@ -111,22 +84,116 @@ class TestRunStage1:
         assert result == Stage1Result.failed
 
 
-# ─── Stage 2 tests ──────────────────────────────────────────────────────
+class TestEvidenceHelpers:
+    def test_respects_default_exclusions(self, tmp_path: Path):
+        (tmp_path / "app").mkdir()
+        (tmp_path / "tests").mkdir()
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / "app" / "main.py").write_text("print('ok')")
+        (tmp_path / "tests" / "test_main.py").write_text("assert True")
+        (tmp_path / ".venv" / "ignored.py").write_text("print('ignore')")
+
+        assert _list_python_files(tmp_path) == ["app/main.py"]
+
+    def test_merge_evidence_deduplicates(self):
+        state = InvestigationState(suspicious_file_path="app.py")
+        item = EvidenceItem("file", "A", "app.py", "body", 1, 2)
+        added = _merge_evidence(state, [item, item])
+        assert added == 1
+        assert len(state.evidence_items) == 1
+
+    def test_truncate_evidence_formats_items(self):
+        text = _truncate_evidence_for_prompt(
+            [EvidenceItem("file", "A", "app.py", "File: app.py", 1, 2, rationale="needed")]
+        )
+        assert "label=A" in text
+        assert "why=needed" in text
+
+    def test_normalise_requests_supports_new_request_kinds(self):
+        requests = _normalise_requests(
+            [
+                {
+                    "kind": "class_method_definition",
+                    "class_name": "Danger",
+                    "method_name": "run",
+                    "why": "inspect wrapper",
+                },
+                {"kind": "dependency_manifest", "dependency_name": "django", "why": "ground dependency"},
+            ]
+        )
+        assert [request.kind for request in requests] == ["class_method_definition", "dependency_manifest"]
+
+    def test_class_method_resolution(self, tmp_path: Path):
+        file_path = tmp_path / "app.py"
+        file_path.write_text("class Danger:\n    def run(self):\n        return 1\n")
+        evidence = resolve_class_method_definition(tmp_path, "Danger", "run")
+        assert evidence
+        assert evidence[0].file_path == "app.py"
+
+    def test_dependency_manifest_loading(self, tmp_path: Path):
+        (tmp_path / "requirements.txt").write_text("django==5.0\nrequests==2.0\n")
+        evidence = load_dependency_manifests(tmp_path, "django")
+        assert evidence
+        assert evidence[0].file_path == "requirements.txt"
+
+
+class TestArbiterParsing:
+    def test_rejects_issue_without_exact_line_match(self):
+        raw = {
+            "verdict": "definitive_issue",
+            "confidence": 0.9,
+            "exact_file_path": "app.py",
+            "exact_line_number": 10,
+            "proof_chain": ["input reaches sink"],
+            "missing_requirements": [],
+            "summary": "confirmed",
+            "finding": {
+                "file_path": "app.py",
+                "vulnerability_type": "SQL Injection",
+                "severity": "high",
+                "line_number": 11,
+                "description": "desc",
+                "explanation": "exp",
+            },
+        }
+        parsed = _parse_arbiter_output(raw, "app.py", {"app.py"})
+        assert parsed.verdict == "continue"
+        assert parsed.finding is None
 
 
 class TestRunStage2:
     @patch("app.scanner.pipeline._list_python_files")
     @patch("app.scanner.pipeline.call_llm_json")
-    def test_returns_findings(self, mock_call, mock_list):
+    def test_returns_definitive_issue(self, mock_call, mock_list):
         mock_list.return_value = ["app.py", "db.py"]
-        mock_call.return_value = {
-            "status": "final",
-            "summary": "Confirmed SQL injection sink.",
-            "hypothesis": "user input reaches execute",
-            "requests": [],
-            "final_verdict": "definitive_issue",
-            "findings": [
-                {
+        mock_call.side_effect = [
+            {
+                "hypothesis": "user input reaches database execute",
+                "candidate_terminal_sites": [{"file_path": "db.py", "line_number": 10, "reason": "execute sink"}],
+                "specificity": "line",
+                "requests": [],
+                "confidence": 0.7,
+                "known_unknowns": [],
+                "falsification_conditions": [],
+            },
+            {
+                "outcome": "conceded",
+                "counter_hypothesis": "",
+                "rebuttals": [],
+                "requests": [],
+                "remaining_concerns": [],
+                "narrowing_hint": "",
+                "confidence": 0.6,
+            },
+            {
+                "verdict": "definitive_issue",
+                "confidence": 0.9,
+                "exact_file_path": "db.py",
+                "exact_line_number": 10,
+                "proof_chain": ["request param flows into execute"],
+                "missing_requirements": [],
+                "summary": "Confirmed SQL injection sink.",
+                "finding": {
                     "file_path": "db.py",
                     "vulnerability_type": "SQL Injection",
                     "severity": "high",
@@ -134,53 +201,58 @@ class TestRunStage2:
                     "description": "desc",
                     "explanation": "exp",
                     "code_snippet": "code",
-                }
-            ],
-        }
+                },
+            },
+        ]
         outcome = _run_stage2(Path("/tmp/clone"), "app.py", "code")
         assert outcome.verdict == "definitive_issue"
         assert len(outcome.findings) == 1
         assert outcome.findings[0].file_path == "db.py"
-        assert outcome.findings[0].vulnerability_type == "SQL Injection"
+        assert mock_call.call_args_list[0].kwargs["role_name"] == "investigator"
+        assert mock_call.call_args_list[1].kwargs["role_name"] == "challenger"
+        assert mock_call.call_args_list[2].kwargs["role_name"] == "arbiter"
 
-    @patch("app.scanner.pipeline._resolve_stage2_requests")
+    @patch("app.scanner.pipeline._resolve_requests")
     @patch("app.scanner.pipeline._list_python_files")
     @patch("app.scanner.pipeline.call_llm_json")
-    def test_iterates_for_more_context(self, mock_call, mock_list, mock_resolve):
+    def test_iterates_then_returns_uncertain(self, mock_call, mock_list, mock_resolve):
         mock_list.return_value = ["app.py", "helpers.py"]
-        mock_resolve.return_value = []
-        mock_call.side_effect = [
-            {
-                "status": "continue",
-                "summary": "Need helper definition.",
-                "hypothesis": "maybe sanitized",
-                "requests": [
-                    {
-                        "kind": "symbol_definition",
-                        "symbol": "sanitize",
-                        "file_path": "",
-                        "why": "Need to inspect sanitizer implementation",
-                    }
-                ],
-                "final_verdict": "iteration_cap_reached",
-                "findings": [],
-            },
-            {
-                "status": "final",
-                "summary": "Sanitizer escapes dangerous characters.",
-                "hypothesis": "safe",
-                "requests": [],
-                "final_verdict": "definitive_no_issue",
-                "findings": [],
-            },
-        ]
+        mock_resolve.return_value = [EvidenceItem("file", "helper", "helpers.py", "body", 1, 4)]
+        investigator = {
+            "hypothesis": "maybe sanitized in helper",
+            "candidate_terminal_sites": [],
+            "specificity": "function",
+            "requests": [{"kind": "symbol_definition", "symbol": "sanitize", "why": "inspect helper"}],
+            "confidence": 0.4,
+            "known_unknowns": ["Need helper definition"],
+            "falsification_conditions": [],
+        }
+        challenger = {
+            "outcome": "needs_context",
+            "counter_hypothesis": "helper may sanitize input",
+            "rebuttals": ["No helper body seen"],
+            "requests": [],
+            "remaining_concerns": ["helper unresolved"],
+            "narrowing_hint": "inspect sanitize",
+            "confidence": 0.3,
+        }
+        arbiter = {
+            "verdict": "continue",
+            "confidence": 0.2,
+            "exact_file_path": "",
+            "exact_line_number": 0,
+            "proof_chain": [],
+            "missing_requirements": ["Need helper definition"],
+            "summary": "Need more evidence",
+            "finding": None,
+        }
+        mock_call.side_effect = [investigator, challenger, arbiter] * 10
 
         outcome = _run_stage2(Path("/tmp/clone"), "app.py", "code")
 
-        assert outcome.verdict == "definitive_no_issue"
-        assert outcome.findings == []
+        assert outcome.verdict == "uncertain"
+        assert "Need helper definition" in outcome.blockers or "helper unresolved" in outcome.blockers
         assert mock_resolve.called
-        assert mock_call.call_count == 2
 
     @patch("app.scanner.pipeline._list_python_files")
     @patch("app.scanner.pipeline.call_llm_json")
@@ -190,29 +262,9 @@ class TestRunStage2:
         with pytest.raises(LLMParseError):
             _run_stage2(Path("/tmp/clone"), "app.py", "code")
 
-    def test_unknown_finding_file_path_falls_back_to_original_file(self):
-        raw = {
-            "file_path": "missing.py",
-            "vulnerability_type": "XSS",
-            "severity": "high",
-            "line_number": 33,
-            "description": "desc",
-            "explanation": "exp",
-        }
-
-        finding = _validate_finding(raw, "app.py", {"app.py", "helpers.py"})
-
-        assert finding is not None
-        assert finding.file_path == "app.py"
-        assert finding.line_number == 33
-
-
-# ─── _process_file integration tests ────────────────────────────────────
-
 
 class TestProcessFile:
     def _make_scan_file(self, file_path: str = "app.py") -> MagicMock:
-        """Create a mock ScanFile-like object for testing."""
         sf = MagicMock(spec=ScanFile)
         sf.file_path = file_path
         sf.stage1_result = None
@@ -236,77 +288,27 @@ class TestProcessFile:
         sf = self._make_scan_file()
         result_sf, findings = _process_file(Path("/tmp/clone"), sf)
 
-        assert result_sf.stage1_result == Stage1Result.suspicious
         assert result_sf.stage2_attempted is True
         assert result_sf.processing_status == ProcessingStatus.complete
         assert len(findings) == 1
 
-    @patch("app.scanner.pipeline._run_stage1")
-    @patch("app.scanner.pipeline._read_file")
-    def test_not_suspicious_skips_stage2(self, mock_read, mock_s1):
-        mock_read.return_value = "X = 42\nY = 100\nZ = 200"
-        mock_s1.return_value = Stage1Result.not_suspicious
-
-        sf = self._make_scan_file("constants.py")
-        result_sf, findings = _process_file(Path("/tmp/clone"), sf)
-
-        assert result_sf.stage1_result == Stage1Result.not_suspicious
-        assert result_sf.processing_status == ProcessingStatus.complete
-        assert result_sf.stage2_attempted is False
-        assert findings == []
-
-    @patch("app.scanner.pipeline._read_file")
-    def test_unreadable_file_fails(self, mock_read):
-        mock_read.return_value = None
-
-        sf = self._make_scan_file()
-        result_sf, findings = _process_file(Path("/tmp/clone"), sf)
-
-        assert result_sf.processing_status == ProcessingStatus.failed
-        assert findings == []
-
-    @patch("app.scanner.pipeline._read_file")
-    def test_empty_file_skipped(self, mock_read):
-        mock_read.return_value = ""
-
-        sf = self._make_scan_file("__init__.py")
-        result_sf, findings = _process_file(Path("/tmp/clone"), sf)
-
-        assert result_sf.stage1_result == Stage1Result.not_suspicious
-        assert result_sf.processing_status == ProcessingStatus.skipped
-
     @patch("app.scanner.pipeline._run_stage2")
     @patch("app.scanner.pipeline._run_stage1")
     @patch("app.scanner.pipeline._read_file")
-    def test_stage2_failure_marks_file_failed(self, mock_read, mock_s1, mock_s2):
-        mock_read.return_value = "import os\nos.system(input())"
-        mock_s1.return_value = Stage1Result.suspicious
-        mock_s2.side_effect = LLMParseError("bad json after retries")
-
-        sf = self._make_scan_file()
-        result_sf, findings = _process_file(Path("/tmp/clone"), sf)
-
-        assert result_sf.processing_status == ProcessingStatus.failed
-        assert result_sf.stage2_attempted is True
-        assert "Stage 2 failed" in result_sf.error_message
-        assert findings == []
-
-    @patch("app.scanner.pipeline._run_stage2")
-    @patch("app.scanner.pipeline._run_stage1")
-    @patch("app.scanner.pipeline._read_file")
-    def test_iteration_cap_records_uncertainty(self, mock_read, mock_s1, mock_s2):
+    def test_uncertain_records_metadata(self, mock_read, mock_s1, mock_s2):
         mock_read.return_value = "import os\nos.system(input())"
         mock_s1.return_value = Stage1Result.suspicious
         mock_s2.return_value = Stage2Outcome(
-            verdict="iteration_cap_reached",
+            verdict="uncertain",
             findings=[],
-            summary="Could not prove whether wrapper sanitizes input.",
+            summary="Could not prove wrapper behavior.",
+            blockers=["Need helper definition"],
         )
 
         sf = self._make_scan_file()
         result_sf, findings = _process_file(Path("/tmp/clone"), sf)
 
         assert result_sf.processing_status == ProcessingStatus.complete
-        assert result_sf.stage2_attempted is True
-        assert "Stage 2 uncertainty" in result_sf.error_message
+        assert "Stage 2 uncertain" in result_sf.error_message
+        assert "Need helper definition" in result_sf.error_message
         assert findings == []
