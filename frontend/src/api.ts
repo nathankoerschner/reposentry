@@ -1,5 +1,12 @@
 import axios from "axios";
 
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  return (
+    (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+    fallback
+  );
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
 });
@@ -45,6 +52,7 @@ export const deleteRepository = (id: string) =>
 /* ── Scans ────────────────────────────────────────────────── */
 
 export type ScanStatus = "queued" | "running" | "complete" | "failed";
+export type ProcessingStatus = "queued" | "running" | "complete" | "failed" | "skipped";
 
 export interface ScanSummary {
   id: string;
@@ -71,8 +79,30 @@ export interface ScanFile {
   file_path: string;
   stage1_result: "suspicious" | "not_suspicious" | "failed" | null;
   stage2_attempted: boolean;
-  processing_status: "complete" | "failed" | "skipped" | null;
+  processing_status: ProcessingStatus | null;
+  started_at: string | null;
+  completed_at: string | null;
   error_message: string | null;
+}
+
+export interface ActiveScanFile {
+  id: string;
+  file_path: string;
+  stage1_result: "suspicious" | "not_suspicious" | "failed" | null;
+  processing_status: ProcessingStatus;
+  started_at: string | null;
+}
+
+export interface ScanProgress {
+  status: ScanStatus;
+  files_total: number;
+  files_queued: number;
+  files_running: number;
+  files_complete: number;
+  files_failed: number;
+  files_skipped: number;
+  findings_so_far: number;
+  active_files: ActiveScanFile[];
 }
 
 export const listScans = (repoId: string) =>
@@ -86,6 +116,9 @@ export const getScan = (scanId: string) =>
 
 export const getScanFiles = (scanId: string) =>
   api.get<ScanFile[]>(`/api/scans/${scanId}/files`).then((r) => r.data);
+
+export const getScanProgress = (scanId: string) =>
+  api.get<ScanProgress>(`/api/scans/${scanId}/progress`).then((r) => r.data);
 
 export const deleteScan = (scanId: string) =>
   api.delete(`/api/scans/${scanId}`).then((r) => r.data);

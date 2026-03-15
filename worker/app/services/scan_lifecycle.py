@@ -29,9 +29,7 @@ def _clone_dir(scan_id: uuid.UUID) -> Path:
 def transition_to_running(db: Session, scan: Scan) -> None:
     """Mark scan as running. Raises if not in queued state."""
     if scan.status != ScanStatus.queued:
-        raise ScanLifecycleError(
-            f"Cannot start scan {scan.id}: expected status 'queued', got '{scan.status}'"
-        )
+        raise ScanLifecycleError(f"Cannot start scan {scan.id}: expected status 'queued', got '{scan.status}'")
     scan.status = ScanStatus.running
     scan.started_at = datetime.now(timezone.utc)
     db.commit()
@@ -75,8 +73,10 @@ def _detect_default_branch(repo_url: str) -> str:
     return "main"
 
 
-def clone_repository(scan: Scan, repo: Repository) -> tuple[Path, str]:
-    """Clone the repository into the scan workspace and return (clone_path, commit_sha).
+def clone_repository(scan: Scan, repo: Repository) -> tuple[Path, str, str]:
+    """Clone the repository into the scan workspace.
+
+    Returns ``(clone_path, branch, commit_sha)``.
 
     Uses shallow clone (depth=1) for speed. Falls back to default branch if
     none is explicitly set on the repository record.
@@ -84,9 +84,7 @@ def clone_repository(scan: Scan, repo: Repository) -> tuple[Path, str]:
     clone_path = _clone_dir(scan.id)
     clone_path.mkdir(parents=True, exist_ok=True)
 
-    branch = repo.default_branch
-    if not branch:
-        branch = _detect_default_branch(repo.url)
+    branch = repo.default_branch or _detect_default_branch(repo.url)
     logger.info("Cloning %s (branch=%s) into %s", repo.url, branch, clone_path)
 
     cloned = git.Repo.clone_from(
@@ -99,7 +97,7 @@ def clone_repository(scan: Scan, repo: Repository) -> tuple[Path, str]:
 
     commit_sha = cloned.head.commit.hexsha
     logger.info("Cloned %s at commit %s", repo.url, commit_sha)
-    return clone_path, commit_sha
+    return clone_path, branch, commit_sha
 
 
 def cleanup_workspace(scan_id: uuid.UUID) -> None:

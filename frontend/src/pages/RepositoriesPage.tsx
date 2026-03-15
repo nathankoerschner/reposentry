@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { listRepositories, createRepository, deleteRepository } from "../api";
+import { listRepositories, createRepository, deleteRepository, getApiErrorMessage } from "../api";
 import type { Repository } from "../api";
 import { GitBranch, Plus, Trash2 } from "lucide-react";
 
@@ -36,10 +36,7 @@ export function RepositoriesPage() {
       setUrl("");
       await load();
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail ?? "Failed to add repository";
-      setError(msg);
+      setError(getApiErrorMessage(err, "Failed to add repository"));
     } finally {
       setAdding(false);
     }
@@ -61,10 +58,7 @@ export function RepositoriesPage() {
       await deleteRepository(repo.id);
       await load();
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail ?? "Failed to delete repository";
-      setError(msg);
+      setError(getApiErrorMessage(err, "Failed to delete repository"));
     } finally {
       setDeletingRepoId(null);
     }

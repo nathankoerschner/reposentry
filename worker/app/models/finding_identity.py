@@ -25,6 +25,4 @@ class FindingIdentity(Base):
     repository = relationship("Repository", back_populates="finding_identities")
     occurrences = relationship("FindingOccurrence", back_populates="finding_identity")
 
-    __table_args__ = (
-        UniqueConstraint("repository_id", "fingerprint", name="uq_finding_identity_repo_fingerprint"),
-    )
+    __table_args__ = (UniqueConstraint("repository_id", "fingerprint", name="uq_finding_identity_repo_fingerprint"),)

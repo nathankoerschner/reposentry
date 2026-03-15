@@ -13,8 +13,10 @@ class Settings(BaseSettings):
 
     # Scanner
     clone_base_dir: str = "/tmp/zeropath-clones"
-    max_file_retries: int = 2
-    max_concurrent_files: int = 5
+    max_file_retries: int = 1
+    max_concurrent_files: int = 3
+    max_stage2_iterations: int = 2
+    llm_max_tokens: int = 2000
 
     # General
     environment: str = "development"

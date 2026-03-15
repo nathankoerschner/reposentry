@@ -49,7 +49,10 @@ def execute_scan(scan_id: uuid.UUID) -> None:
 
         # ── Phase 2: clone ───────────────────────────────────────
         try:
-            clone_path, commit_sha = clone_repository(scan, repo)
+            clone_path, branch, commit_sha = clone_repository(scan, repo)
+            if repo.default_branch != branch:
+                repo.default_branch = branch
+                db.commit()
         except Exception as exc:
             transition_to_failed(db, scan, f"Clone failed: {exc}")
             return
@@ -59,9 +62,7 @@ def execute_scan(scan_id: uuid.UUID) -> None:
             candidate_paths = discover_python_files(clone_path)
             scan_files = create_scan_file_records(db, scan.id, candidate_paths)
             db.commit()
-            logger.info(
-                "Scan %s: discovered %d candidate files", scan_id, len(scan_files)
-            )
+            logger.info("Scan %s: discovered %d candidate files", scan_id, len(scan_files))
         except Exception as exc:
             db.rollback()
             transition_to_failed(db, scan, f"File discovery failed: {exc}")
@@ -71,9 +72,7 @@ def execute_scan(scan_id: uuid.UUID) -> None:
         try:
             findings = run_scan_pipeline(db, scan.id, clone_path, scan_files)
             db.commit()
-            logger.info(
-                "Scan %s: LLM pipeline produced %d findings", scan_id, len(findings)
-            )
+            logger.info("Scan %s: LLM pipeline produced %d findings", scan_id, len(findings))
         except Exception as exc:
             db.rollback()
             transition_to_failed(db, scan, f"LLM scanning failed: {exc}")
@@ -85,7 +84,8 @@ def execute_scan(scan_id: uuid.UUID) -> None:
             db.commit()
             logger.info(
                 "Scan %s: persisted %d deduplicated occurrences",
-                scan_id, len(occurrences),
+                scan_id,
+                len(occurrences),
             )
         except Exception as exc:
             db.rollback()

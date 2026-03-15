@@ -15,9 +15,7 @@ class FindingOccurrence(Base):
     __tablename__ = "finding_occurrences"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    scan_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("scans.id"), nullable=False, index=True
-    )
+    scan_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("scans.id"), nullable=False, index=True)
     finding_identity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("finding_identities.id"), nullable=False, index=True
     )

@@ -1,14 +1,18 @@
 """Tests for the Ralph-loop LLM scanning pipeline."""
 
 import json
+import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from app.models.enums import ProcessingStatus, Stage1Result
-from app.models.scan_file import ScanFile
-from app.scanner.evidence import EvidenceItem, EvidenceRequest, load_dependency_manifests, resolve_class_method_definition
+from app.scanner.evidence import (
+    EvidenceItem,
+    load_dependency_manifests,
+    resolve_class_method_definition,
+)
 from app.scanner.llm_client import LLMParseError, _extract_json
 from app.scanner.pipeline import (
     FindingResult,
@@ -264,51 +268,42 @@ class TestRunStage2:
 
 
 class TestProcessFile:
-    def _make_scan_file(self, file_path: str = "app.py") -> MagicMock:
-        sf = MagicMock(spec=ScanFile)
-        sf.file_path = file_path
-        sf.stage1_result = None
-        sf.stage2_attempted = False
-        sf.processing_status = None
-        sf.error_message = None
-        return sf
+    def test_suspicious_file_gets_stage2(self):
+        with (
+            patch("app.scanner.pipeline._read_file", return_value="import os\nos.system(input())"),
+            patch("app.scanner.pipeline._run_stage1", return_value=Stage1Result.suspicious),
+            patch(
+                "app.scanner.pipeline._run_stage2",
+                return_value=Stage2Outcome(
+                    verdict="definitive_issue",
+                    findings=[FindingResult("app.py", "Command Injection", "critical", 2, "d", "e", "c")],
+                    summary="Confirmed dangerous sink.",
+                ),
+            ),
+        ):
+            result = _process_file(Path("/tmp/clone"), uuid.uuid4(), "app.py")
 
-    @patch("app.scanner.pipeline._run_stage2")
-    @patch("app.scanner.pipeline._run_stage1")
-    @patch("app.scanner.pipeline._read_file")
-    def test_suspicious_file_gets_stage2(self, mock_read, mock_s1, mock_s2):
-        mock_read.return_value = "import os\nos.system(input())"
-        mock_s1.return_value = Stage1Result.suspicious
-        mock_s2.return_value = Stage2Outcome(
-            verdict="definitive_issue",
-            findings=[FindingResult("app.py", "Command Injection", "critical", 2, "d", "e", "c")],
-            summary="Confirmed dangerous sink.",
-        )
+        assert result.stage2_attempted is True
+        assert result.processing_status == ProcessingStatus.complete
+        assert len(result.findings) == 1
 
-        sf = self._make_scan_file()
-        result_sf, findings = _process_file(Path("/tmp/clone"), sf)
+    def test_uncertain_records_metadata(self):
+        with (
+            patch("app.scanner.pipeline._read_file", return_value="import os\nos.system(input())"),
+            patch("app.scanner.pipeline._run_stage1", return_value=Stage1Result.suspicious),
+            patch(
+                "app.scanner.pipeline._run_stage2",
+                return_value=Stage2Outcome(
+                    verdict="uncertain",
+                    findings=[],
+                    summary="Could not prove wrapper behavior.",
+                    blockers=["Need helper definition"],
+                ),
+            ),
+        ):
+            result = _process_file(Path("/tmp/clone"), uuid.uuid4(), "app.py")
 
-        assert result_sf.stage2_attempted is True
-        assert result_sf.processing_status == ProcessingStatus.complete
-        assert len(findings) == 1
-
-    @patch("app.scanner.pipeline._run_stage2")
-    @patch("app.scanner.pipeline._run_stage1")
-    @patch("app.scanner.pipeline._read_file")
-    def test_uncertain_records_metadata(self, mock_read, mock_s1, mock_s2):
-        mock_read.return_value = "import os\nos.system(input())"
-        mock_s1.return_value = Stage1Result.suspicious
-        mock_s2.return_value = Stage2Outcome(
-            verdict="uncertain",
-            findings=[],
-            summary="Could not prove wrapper behavior.",
-            blockers=["Need helper definition"],
-        )
-
-        sf = self._make_scan_file()
-        result_sf, findings = _process_file(Path("/tmp/clone"), sf)
-
-        assert result_sf.processing_status == ProcessingStatus.complete
-        assert "Stage 2 uncertain" in result_sf.error_message
-        assert "Need helper definition" in result_sf.error_message
-        assert findings == []
+        assert result.processing_status == ProcessingStatus.complete
+        assert "Stage 2 uncertain" in result.error_message
+        assert "Need helper definition" in result.error_message
+        assert result.findings == []

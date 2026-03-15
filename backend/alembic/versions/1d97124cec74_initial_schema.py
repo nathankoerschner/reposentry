@@ -9,8 +9,9 @@ Create Date: 2026-03-12 21:55:35.717541
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "1d97124cec74"
@@ -22,7 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 # --- Enum types used in columns ---
 scan_status = sa.Enum("queued", "running", "complete", "failed", name="scanstatus")
 stage1_result = sa.Enum("suspicious", "not_suspicious", "failed", name="stage1result")
-processing_status = sa.Enum("complete", "failed", "skipped", name="processingstatus")
+processing_status = sa.Enum("queued", "running", "complete", "failed", "skipped", name="processingstatus")
 severity = sa.Enum("low", "medium", "high", "critical", name="severity")
 triage_status = sa.Enum("open", "false_positive", "resolved", name="triagestatus")
 
@@ -78,6 +79,8 @@ def upgrade() -> None:
         sa.Column("stage1_result", stage1_result, nullable=True),
         sa.Column("stage2_attempted", sa.Boolean, nullable=False, server_default=sa.text("false")),
         sa.Column("processing_status", processing_status, nullable=True),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error_message", sa.Text, nullable=True),
     )
     op.create_index("ix_scan_files_scan_id", "scan_files", ["scan_id"])
@@ -102,9 +105,7 @@ def upgrade() -> None:
         "finding_occurrences",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("scan_id", UUID(as_uuid=True), sa.ForeignKey("scans.id"), nullable=False),
-        sa.Column(
-            "finding_identity_id", UUID(as_uuid=True), sa.ForeignKey("finding_identities.id"), nullable=False
-        ),
+        sa.Column("finding_identity_id", UUID(as_uuid=True), sa.ForeignKey("finding_identities.id"), nullable=False),
         sa.Column("file_path", sa.String(2048), nullable=False),
         sa.Column("line_number", sa.Integer, nullable=False),
         sa.Column("severity", severity, nullable=False),
@@ -121,9 +122,7 @@ def upgrade() -> None:
     op.create_table(
         "finding_triage",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "finding_occurrence_id", UUID(as_uuid=True), sa.ForeignKey("finding_occurrences.id"), nullable=False
-        ),
+        sa.Column("finding_occurrence_id", UUID(as_uuid=True), sa.ForeignKey("finding_occurrences.id"), nullable=False),
         sa.Column("status", triage_status, nullable=False, server_default="open"),
         sa.Column("note", sa.Text, nullable=True),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),

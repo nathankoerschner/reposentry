@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getRepository, listScans, createScan, deleteScan } from "../api";
+import { getRepository, listScans, createScan, deleteScan, getApiErrorMessage } from "../api";
 import type { Repository, ScanSummary } from "../api";
 import { StatusBadge } from "../components/StatusBadge";
 import { Play, GitCompare, Trash2 } from "lucide-react";
@@ -75,10 +75,7 @@ export function RepositoryDetailPage() {
       if (targetScanId === scan.id) setTargetScanId("");
       await load();
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail ?? "Failed to delete scan";
-      setError(msg);
+      setError(getApiErrorMessage(err, "Failed to delete scan"));
     } finally {
       setDeletingScanId(null);
     }

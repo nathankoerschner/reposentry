@@ -10,9 +10,11 @@ app = FastAPI(
     description="LLM-powered Python security scanner platform",
 )
 
+cors_allowed_origins = [origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()],
+    allow_origins=cors_allowed_origins,
     allow_origin_regex=settings.cors_allowed_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],

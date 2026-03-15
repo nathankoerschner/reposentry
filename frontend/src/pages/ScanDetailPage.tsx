@@ -1,29 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  getScan,
   getRepository,
+  getScan,
   getScanFiles,
   getScanFindings,
+  getScanProgress,
 } from "../api";
 import type {
   FindingOccurrence,
   Repository,
   Scan,
   ScanFile,
+  ScanProgress,
 } from "../api";
 import { FindingCard } from "../components/FindingCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { sortFindingsBySeverity } from "../severity";
 import { AlertCircle, ArrowLeft, LoaderCircle } from "lucide-react";
 
-const POLL_INTERVAL_MS = 3000;
+const ACTIVE_POLL_INTERVAL_MS = 1000;
 
 export function ScanDetailPage() {
   const { scanId } = useParams<{ scanId: string }>();
   const [scan, setScan] = useState<Scan | null>(null);
   const [repo, setRepo] = useState<Repository | null>(null);
   const [files, setFiles] = useState<ScanFile[]>([]);
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [findings, setFindings] = useState<FindingOccurrence[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,11 +48,14 @@ export function ScanDetailPage() {
         setScan(currentScan);
         setError(null);
 
-        const [scanFiles, repoResult, findingResults] = await Promise.all([
-          getScanFiles(scanId).catch(() => [] as ScanFile[]),
+        const isActive = currentScan.status === "queued" || currentScan.status === "running";
+
+        const [repoResult, progressResult, scanFiles, findingResults] = await Promise.all([
           currentScan.repository_id
             ? getRepository(currentScan.repository_id).catch(() => null)
             : Promise.resolve(null),
+          isActive ? getScanProgress(scanId).catch(() => null) : Promise.resolve(null),
+          !isActive ? getScanFiles(scanId).catch(() => [] as ScanFile[]) : Promise.resolve([] as ScanFile[]),
           currentScan.status === "complete"
             ? getScanFindings(scanId).catch(() => [] as FindingOccurrence[])
             : Promise.resolve([] as FindingOccurrence[]),
@@ -57,14 +63,15 @@ export function ScanDetailPage() {
 
         if (cancelled) return;
 
-        setFiles(scanFiles);
         setRepo(repoResult);
+        setProgress(progressResult);
+        setFiles(scanFiles);
         setFindings(sortFindingsBySeverity(findingResults));
 
-        if (currentScan.status === "queued" || currentScan.status === "running") {
+        if (isActive) {
           timeoutId = window.setTimeout(() => {
             void load();
-          }, POLL_INTERVAL_MS);
+          }, ACTIVE_POLL_INTERVAL_MS);
         }
       } catch {
         if (cancelled) return;
@@ -86,23 +93,33 @@ export function ScanDetailPage() {
     };
   }, [scanId]);
 
-  const processedFiles = useMemo(
-    () => files.filter((file) => file.processing_status !== null).length,
-    [files],
-  );
-  const failedFiles = useMemo(
-    () => files.filter((file) => file.processing_status === "failed").length,
-    [files],
-  );
+  const processedFiles = useMemo(() => {
+    if (progress) {
+      return progress.files_complete + progress.files_failed + progress.files_skipped;
+    }
+    return files.filter((file) => file.processing_status !== null).length;
+  }, [files, progress]);
+
+  const failedFiles = useMemo(() => {
+    if (progress) {
+      return progress.files_failed;
+    }
+    return files.filter((file) => file.processing_status === "failed").length;
+  }, [files, progress]);
+
+  const totalFiles = progress?.files_total ?? files.length;
+  const runningFiles = progress?.files_running ?? 0;
+  const queuedFiles = progress?.files_queued ?? 0;
+
   const progressPercent = useMemo(() => {
     if (!scan) return 0;
     if (scan.status === "complete") return 100;
     if (scan.status === "failed") {
-      return files.length > 0 ? Math.round((processedFiles / files.length) * 100) : 100;
+      return totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 100;
     }
-    if (files.length === 0) return 12;
-    return Math.max(12, Math.round((processedFiles / files.length) * 100));
-  }, [files.length, processedFiles, scan]);
+    if (totalFiles === 0) return 0;
+    return Math.round((processedFiles / totalFiles) * 100);
+  }, [processedFiles, scan, totalFiles]);
 
   if (loading) return <div className="loading">Loading...</div>;
   if (!scan) return <div className="loading">Scan not found</div>;
@@ -153,8 +170,8 @@ export function ScanDetailPage() {
                     <StatusBadge status={scan.status} />
                   </div>
                   <p className="scan-progress-subtitle">
-                    {files.length > 0
-                      ? `${processedFiles} of ${files.length} files processed`
+                    {totalFiles > 0
+                      ? `${processedFiles} of ${totalFiles} files finished`
                       : "Preparing file inventory and waiting for the worker to begin."}
                   </p>
                 </div>
@@ -171,7 +188,7 @@ export function ScanDetailPage() {
                 aria-valuenow={progressPercent}
               >
                 <div
-                  className={`scan-progress-fill ${files.length === 0 ? "indeterminate" : ""}`}
+                  className={`scan-progress-fill ${totalFiles === 0 ? "indeterminate" : ""}`}
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
@@ -182,17 +199,38 @@ export function ScanDetailPage() {
                   <span className="value">{progressPercent}%</span>
                 </div>
                 <div className="scan-progress-metric">
-                  <span className="label">Files processed</span>
-                  <span className="value">{processedFiles}</span>
+                  <span className="label">Complete</span>
+                  <span className="value">{progress?.files_complete ?? "—"}</span>
                 </div>
                 <div className="scan-progress-metric">
-                  <span className="label">Files discovered</span>
-                  <span className="value">{files.length || "—"}</span>
+                  <span className="label">Running</span>
+                  <span className="value">{runningFiles || "—"}</span>
+                </div>
+                <div className="scan-progress-metric">
+                  <span className="label">Queued</span>
+                  <span className="value">{queuedFiles || "—"}</span>
+                </div>
+                <div className="scan-progress-metric">
+                  <span className="label">Failed</span>
+                  <span className="value">{failedFiles || "—"}</span>
                 </div>
               </div>
 
+              {progress && progress.active_files.length > 0 && (
+                <div className="scan-summary-card" style={{ marginTop: 16 }}>
+                  <span className="label">Active files</span>
+                  <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                    {progress.active_files.map((file) => (
+                      <div key={file.id} style={{ fontSize: 13, wordBreak: "break-all" }}>
+                        {file.file_path}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <p className="poll-notice">
-                This page refreshes automatically every few seconds and will show the
+                This page refreshes automatically every second and will show the
                 findings list as soon as the scan completes.
               </p>
             </section>

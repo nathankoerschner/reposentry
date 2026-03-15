@@ -91,7 +91,7 @@ def call_llm_json(
                 model=selected_model,
                 messages=call_messages,  # type: ignore[arg-type]
                 temperature=selected_temperature,
-                max_tokens=4096,
+                max_tokens=settings.llm_max_tokens,
             )
 
             raw = response.choices[0].message.content or ""

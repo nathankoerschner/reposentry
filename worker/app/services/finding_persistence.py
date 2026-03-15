@@ -80,7 +80,10 @@ def persist_findings(
     if dedup_count > 0:
         logger.info(
             "Scan %s: deduplicated %d findings (%d → %d)",
-            scan_id, dedup_count, len(findings), len(seen_fingerprints),
+            scan_id,
+            dedup_count,
+            len(findings),
+            len(seen_fingerprints),
         )
 
     # ── Step 3–5: upsert identities, create occurrences + triage ──
@@ -119,6 +122,8 @@ def persist_findings(
     db.flush()
     logger.info(
         "Scan %s: persisted %d finding occurrences (%d identities touched)",
-        scan_id, len(occurrences), len(seen_fingerprints),
+        scan_id,
+        len(occurrences),
+        len(seen_fingerprints),
     )
     return occurrences

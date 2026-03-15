@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -82,6 +84,17 @@ class Stage2Outcome:
     summary: str = ""
     explanation: str = ""
     blockers: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class FileProcessingResult:
+    scan_file_id: uuid.UUID
+    file_path: str
+    stage1_result: Stage1Result | None
+    stage2_attempted: bool
+    processing_status: ProcessingStatus
+    error_message: str | None
+    findings: list[FindingResult] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -165,6 +178,31 @@ _REQUEST_KINDS = {
     "dependency_manifest",
 }
 _MIN_CHALLENGE_SPECIFICITY = {"function", "line", "line_and_library"}
+_RISKY_PATH_HINTS = {
+    "api",
+    "routes",
+    "views",
+    "handlers",
+    "controllers",
+    "auth",
+    "admin",
+    "cli",
+    "tasks",
+    "jobs",
+}
+_RISKY_CONTENT_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("command_execution", r"\bsubprocess\.(run|Popen|call|check_output|check_call)\b|\bos\.(system|popen)\b"),
+    ("dynamic_execution", r"\b(eval|exec)\s*\("),
+    ("unsafe_deserialization", r"\bpickle\.(loads?|Unpickler)\b|\byaml\.load\s*\("),
+    ("sql_execution", r"\bcursor\.execute\s*\(|\bexecute\s*\(\s*f?[\"'].*(select|insert|update|delete)"),
+    ("web_handler", r"@[\w.]*route\s*\(|\b(FastAPI|APIRouter|Blueprint|flask|django|request)\b"),
+    ("filesystem_or_path", r"\b(open|Path)\s*\(|\b(os|pathlib)\.path\b"),
+    ("secrets_or_crypto", r"\b(jwt|token|password|secret|encrypt|decrypt|hashlib|hmac)\b"),
+)
+
+
+def _stage2_round_limit() -> int:
+    return max(1, min(settings.max_stage2_iterations, MAX_STAGE2_INVESTIGATION_ITERATIONS))
 
 
 def _read_file(clone_path: Path, rel_path: str) -> str | None:
@@ -277,8 +315,18 @@ def _format_investigation_state(state: InvestigationState) -> str:
             f"candidate_sanitizers: {state.candidate_sanitizers or ['<none>']}",
             f"unresolved_blockers: {state.unresolved_blockers or ['<none>']}",
             f"external_libraries_touched: {state.external_libraries_touched or ['<none>']}",
-            f"role_statuses: investigator={state.investigator_status} challenger={state.challenger_status} arbiter={state.arbiter_status}",
-            f"role_confidences: investigator={state.investigator_confidence:.2f} challenger={state.challenger_confidence:.2f} arbiter={state.arbiter_confidence:.2f}",
+            (
+                "role_statuses: "
+                f"investigator={state.investigator_status} "
+                f"challenger={state.challenger_status} "
+                f"arbiter={state.arbiter_status}"
+            ),
+            (
+                "role_confidences: "
+                f"investigator={state.investigator_confidence:.2f} "
+                f"challenger={state.challenger_confidence:.2f} "
+                f"arbiter={state.arbiter_confidence:.2f}"
+            ),
             "recent_round_history:",
             *(recent_rounds or ["- <none>"]),
         ]
@@ -357,14 +405,24 @@ def _parse_candidate_terminal_sites(raw_sites: Any) -> list[CandidateTerminalSit
 
 
 def _parse_investigator_output(raw: dict[str, Any]) -> InvestigatorOutput:
+    known_unknowns_raw = raw.get("known_unknowns", [])
+    falsification_conditions_raw = raw.get("falsification_conditions", [])
     return InvestigatorOutput(
         hypothesis=str(raw.get("hypothesis", "")).strip(),
         candidate_terminal_sites=_parse_candidate_terminal_sites(raw.get("candidate_terminal_sites", [])),
         specificity=str(raw.get("specificity", "file")).strip().lower() or "file",
         requests=_normalise_requests(raw.get("requests", [])),
         confidence=_safe_float(raw.get("confidence", 0.0)),
-        known_unknowns=[str(x).strip() for x in raw.get("known_unknowns", []) if str(x).strip()] if isinstance(raw.get("known_unknowns", []), list) else [],
-        falsification_conditions=[str(x).strip() for x in raw.get("falsification_conditions", []) if str(x).strip()] if isinstance(raw.get("falsification_conditions", []), list) else [],
+        known_unknowns=(
+            [str(x).strip() for x in known_unknowns_raw if str(x).strip()]
+            if isinstance(known_unknowns_raw, list)
+            else []
+        ),
+        falsification_conditions=(
+            [str(x).strip() for x in falsification_conditions_raw if str(x).strip()]
+            if isinstance(falsification_conditions_raw, list)
+            else []
+        ),
     )
 
 
@@ -372,12 +430,22 @@ def _parse_challenger_output(raw: dict[str, Any]) -> ChallengerOutput:
     outcome = str(raw.get("outcome", "needs_context")).strip().lower()
     if outcome not in {"refuted", "conceded", "needs_context"}:
         outcome = "needs_context"
+    rebuttals_raw = raw.get("rebuttals", [])
+    remaining_concerns_raw = raw.get("remaining_concerns", [])
     return ChallengerOutput(
         outcome=outcome,
         counter_hypothesis=str(raw.get("counter_hypothesis", "")).strip(),
-        rebuttals=[str(x).strip() for x in raw.get("rebuttals", []) if str(x).strip()] if isinstance(raw.get("rebuttals", []), list) else [],
+        rebuttals=(
+            [str(x).strip() for x in rebuttals_raw if str(x).strip()]
+            if isinstance(rebuttals_raw, list)
+            else []
+        ),
         requests=_normalise_requests(raw.get("requests", [])),
-        remaining_concerns=[str(x).strip() for x in raw.get("remaining_concerns", []) if str(x).strip()] if isinstance(raw.get("remaining_concerns", []), list) else [],
+        remaining_concerns=(
+            [str(x).strip() for x in remaining_concerns_raw if str(x).strip()]
+            if isinstance(remaining_concerns_raw, list)
+            else []
+        ),
         narrowing_hint=str(raw.get("narrowing_hint", "")).strip(),
         confidence=_safe_float(raw.get("confidence", 0.0)),
     )
@@ -416,13 +484,23 @@ def _parse_arbiter_output(
     if verdict == "definitive_no_issue":
         finding = None
 
+    proof_chain_raw = raw.get("proof_chain", [])
+    missing_requirements_raw = raw.get("missing_requirements", [])
     return ArbiterOutput(
         verdict=verdict,
         confidence=_safe_float(raw.get("confidence", 0.0)),
         exact_file_path=exact_file_path,
         exact_line_number=exact_line_number,
-        proof_chain=[str(x).strip() for x in raw.get("proof_chain", []) if str(x).strip()] if isinstance(raw.get("proof_chain", []), list) else [],
-        missing_requirements=[str(x).strip() for x in raw.get("missing_requirements", []) if str(x).strip()] if isinstance(raw.get("missing_requirements", []), list) else [],
+        proof_chain=(
+            [str(x).strip() for x in proof_chain_raw if str(x).strip()]
+            if isinstance(proof_chain_raw, list)
+            else []
+        ),
+        missing_requirements=(
+            [str(x).strip() for x in missing_requirements_raw if str(x).strip()]
+            if isinstance(missing_requirements_raw, list)
+            else []
+        ),
         summary=str(raw.get("summary", "")).strip(),
         finding=finding,
     )
@@ -430,6 +508,54 @@ def _parse_arbiter_output(
 
 def _resolve_requests(clone_path: Path, requests: list[EvidenceRequest]) -> list[EvidenceItem]:
     return resolve_requests(clone_path, requests)
+
+
+def _looks_structurally_benign(file_path: str, content: str) -> bool:
+    stripped_lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not stripped_lines:
+        return True
+
+    normalised_path = file_path.lower()
+    if normalised_path.endswith("/__init__.py") and len(stripped_lines) <= 20:
+        allowed_prefixes = (
+            "from ",
+            "import ",
+            "__all__",
+            '"""',
+            "'''",
+            "#",
+        )
+        return all(line.startswith(allowed_prefixes) for line in stripped_lines)
+
+    if any(token in content for token in ("def ", "async def ", "lambda ", "@", "(")):
+        return False
+
+    allowed_prefixes = (
+        "from ",
+        "import ",
+        "class ",
+        "__all__",
+        '"""',
+        "'''",
+        "#",
+    )
+    return all(line.startswith(allowed_prefixes) or "=" in line for line in stripped_lines)
+
+
+def _heuristic_stage1(file_path: str, content: str) -> Stage1Result | None:
+    normalised_path = file_path.lower()
+    if _looks_structurally_benign(file_path, content):
+        return Stage1Result.not_suspicious
+
+    path_parts = {part for part in normalised_path.replace("\\", "/").split("/") if part}
+    if path_parts & _RISKY_PATH_HINTS:
+        return Stage1Result.suspicious
+
+    for _, pattern in _RISKY_CONTENT_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE | re.MULTILINE):
+            return Stage1Result.suspicious
+
+    return None
 
 
 def _run_stage1(file_path: str, content: str) -> Stage1Result:
@@ -462,7 +588,7 @@ def _run_investigator_step(
 ) -> InvestigatorOutput:
     user_prompt = INVESTIGATOR_USER_TEMPLATE.format(
         round_number=round_number,
-        max_rounds=MAX_STAGE2_INVESTIGATION_ITERATIONS,
+        max_rounds=_stage2_round_limit(),
         file_path=file_path,
         file_content=numbered_content,
         repo_index=repo_index,
@@ -485,7 +611,7 @@ def _run_challenger_step(
 ) -> ChallengerOutput:
     user_prompt = CHALLENGER_USER_TEMPLATE.format(
         round_number=round_number,
-        max_rounds=MAX_STAGE2_INVESTIGATION_ITERATIONS,
+        max_rounds=_stage2_round_limit(),
         file_path=file_path,
         investigation_state=_format_investigation_state(state),
         supplemental_context=_truncate_evidence_for_prompt(state.evidence_items),
@@ -508,7 +634,7 @@ def _run_arbiter_step(
 ) -> ArbiterOutput:
     user_prompt = ARBITER_USER_TEMPLATE.format(
         round_number=round_number,
-        max_rounds=MAX_STAGE2_INVESTIGATION_ITERATIONS,
+        max_rounds=_stage2_round_limit(),
         file_path=file_path,
         must_finalize="yes" if must_finalize else "no",
         investigation_state=_format_investigation_state(state),
@@ -535,7 +661,9 @@ def _advance_investigation_state(
     state.investigator_confidence = investigator.confidence
     state.unresolved_blockers = investigator.known_unknowns[:]
     state.candidate_sink_lines = [
-        f"{site.file_path}:{site.line_number} - {site.reason}" for site in investigator.candidate_terminal_sites if site.file_path and site.line_number > 0
+        f"{site.file_path}:{site.line_number} - {site.reason}"
+        for site in investigator.candidate_terminal_sites
+        if site.file_path and site.line_number > 0
     ]
 
     if challenger is not None:
@@ -549,7 +677,11 @@ def _advance_investigation_state(
     state.arbiter_status = arbiter.verdict
     state.arbiter_confidence = arbiter.confidence
     for item in state.evidence_items:
-        if item.request_kind == "dependency_manifest" and item.symbol and item.symbol not in state.external_libraries_touched:
+        if (
+            item.request_kind == "dependency_manifest"
+            and item.symbol
+            and item.symbol not in state.external_libraries_touched
+        ):
             state.external_libraries_touched.append(item.symbol)
 
 
@@ -561,9 +693,10 @@ def _run_stage2(clone_path: Path, file_path: str, content: str) -> Stage2Outcome
     known_file_paths.add(file_path)
     repo_index = _format_repo_index(repo_paths)
     state = InvestigationState(suspicious_file_path=file_path)
+    max_rounds = _stage2_round_limit()
 
-    for round_number in range(1, MAX_STAGE2_INVESTIGATION_ITERATIONS + 1):
-        must_finalize = round_number == MAX_STAGE2_INVESTIGATION_ITERATIONS
+    for round_number in range(1, max_rounds + 1):
+        must_finalize = round_number == max_rounds
         round_record = RoundRecord(round_number=round_number)
 
         investigator = _run_investigator_step(file_path, numbered, repo_index, state, round_number)
@@ -572,7 +705,12 @@ def _run_stage2(clone_path: Path, file_path: str, content: str) -> Stage2Outcome
         round_record.evidence_added += _merge_evidence(state, investigator_evidence)
 
         challenger: ChallengerOutput | None = None
-        if investigator.hypothesis and investigator.specificity in _MIN_CHALLENGE_SPECIFICITY:
+        should_run_challenger = (
+            investigator.hypothesis
+            and investigator.specificity in _MIN_CHALLENGE_SPECIFICITY
+            and (round_number == max_rounds or investigator.confidence >= 0.75)
+        )
+        if should_run_challenger:
             challenger = _run_challenger_step(file_path, state, round_number)
             round_record.challenger = challenger
             challenger_evidence = _resolve_requests(clone_path, challenger.requests)
@@ -584,7 +722,10 @@ def _run_stage2(clone_path: Path, file_path: str, content: str) -> Stage2Outcome
         _append_round_record(state, round_record)
 
         logger.info(
-            "Stage 2 round file=%s round=%d investigator_conf=%.2f challenger=%s arbiter=%s evidence_added=%d blockers=%d",
+            (
+                "Stage 2 round file=%s round=%d investigator_conf=%.2f "
+                "challenger=%s arbiter=%s evidence_added=%d blockers=%d"
+            ),
             file_path,
             round_number,
             investigator.confidence,
@@ -629,81 +770,143 @@ def _run_stage2(clone_path: Path, file_path: str, content: str) -> Stage2Outcome
 
 def _process_file(
     clone_path: Path,
-    scan_file: ScanFile,
-) -> tuple[ScanFile, list[FindingResult]]:
+    scan_file_id: uuid.UUID,
+    file_path: str,
+) -> FileProcessingResult:
     findings: list[FindingResult] = []
 
-    content = _read_file(clone_path, scan_file.file_path)
+    content = _read_file(clone_path, file_path)
     if content is None:
-        scan_file.stage1_result = Stage1Result.failed
-        scan_file.processing_status = ProcessingStatus.failed
-        scan_file.error_message = "Could not read file"
-        return scan_file, findings
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=Stage1Result.failed,
+            stage2_attempted=False,
+            processing_status=ProcessingStatus.failed,
+            error_message="Could not read file",
+        )
 
     stripped = content.strip()
     if not stripped or len(stripped) < 10:
-        scan_file.stage1_result = Stage1Result.not_suspicious
-        scan_file.processing_status = ProcessingStatus.skipped
-        return scan_file, findings
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=Stage1Result.not_suspicious,
+            stage2_attempted=False,
+            processing_status=ProcessingStatus.skipped,
+            error_message=None,
+        )
 
-    stage1 = _run_stage1(scan_file.file_path, content)
-    scan_file.stage1_result = stage1
-
+    heuristic_stage1 = _heuristic_stage1(file_path, content)
+    stage1 = heuristic_stage1 if heuristic_stage1 is not None else _run_stage1(file_path, content)
     if stage1 == Stage1Result.not_suspicious:
-        scan_file.processing_status = ProcessingStatus.complete
-        return scan_file, findings
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=stage1,
+            stage2_attempted=False,
+            processing_status=ProcessingStatus.complete,
+            error_message=None,
+        )
 
     if stage1 == Stage1Result.failed:
-        scan_file.processing_status = ProcessingStatus.failed
-        scan_file.error_message = "Stage 1 classification failed after retries"
-        return scan_file, findings
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=stage1,
+            stage2_attempted=False,
+            processing_status=ProcessingStatus.failed,
+            error_message="Stage 1 classification failed after retries",
+        )
 
-    scan_file.stage2_attempted = True
     try:
-        outcome = _run_stage2(clone_path, scan_file.file_path, content)
+        outcome = _run_stage2(clone_path, file_path, content)
         findings = outcome.findings
-        scan_file.processing_status = ProcessingStatus.complete
+        error_message = None
         if outcome.verdict == "uncertain":
             details = "; ".join(outcome.blockers) if outcome.blockers else outcome.summary
-            scan_file.error_message = f"Stage 2 uncertain: {details}"
-        else:
-            scan_file.error_message = None
+            error_message = f"Stage 2 uncertain: {details}"
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=stage1,
+            stage2_attempted=True,
+            processing_status=ProcessingStatus.complete,
+            error_message=error_message,
+            findings=findings,
+        )
     except LLMParseError as exc:
-        scan_file.processing_status = ProcessingStatus.failed
-        scan_file.error_message = f"Stage 2 failed: {exc}"
-
-    return scan_file, findings
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=stage1,
+            stage2_attempted=True,
+            processing_status=ProcessingStatus.failed,
+            error_message=f"Stage 2 failed: {exc}",
+        )
+    except Exception as exc:
+        logger.exception("Unexpected error processing %s", file_path)
+        return FileProcessingResult(
+            scan_file_id=scan_file_id,
+            file_path=file_path,
+            stage1_result=stage1,
+            stage2_attempted=True,
+            processing_status=ProcessingStatus.failed,
+            error_message=f"Unexpected error: {exc}",
+        )
 
 
 async def _process_file_async(
     clone_path: Path,
     scan_file: ScanFile,
     semaphore: asyncio.Semaphore,
-) -> tuple[ScanFile, list[FindingResult]]:
+    on_started: Callable[[uuid.UUID], None],
+) -> FileProcessingResult:
     async with semaphore:
+        on_started(scan_file.id)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _process_file, clone_path, scan_file)
+        return await loop.run_in_executor(None, _process_file, clone_path, scan_file.id, scan_file.file_path)
 
 
 async def _run_pipeline_async(
     clone_path: Path,
     scan_files: list[ScanFile],
-) -> list[FindingResult]:
+    on_started: Callable[[uuid.UUID], None],
+    on_completed: Callable[[FileProcessingResult], None],
+) -> None:
     semaphore = asyncio.Semaphore(settings.max_concurrent_files)
-    tasks = [_process_file_async(clone_path, sf, semaphore) for sf in scan_files]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    tasks = [asyncio.create_task(_process_file_async(clone_path, sf, semaphore, on_started)) for sf in scan_files]
 
-    all_findings: list[FindingResult] = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            logger.error("Unexpected error processing %s: %s", scan_files[i].file_path, result)
-            scan_files[i].processing_status = ProcessingStatus.failed
-            scan_files[i].error_message = f"Unexpected error: {result}"
-        else:
-            _, findings = result
-            all_findings.extend(findings)
+    for task in asyncio.as_completed(tasks):
+        on_completed(await task)
 
-    return all_findings
+
+def _mark_file_running(db: Session, scan_file_id: uuid.UUID) -> None:
+    scan_file = db.get(ScanFile, scan_file_id)
+    if scan_file is None:
+        return
+
+    if scan_file.started_at is None:
+        scan_file.started_at = datetime.now(timezone.utc)
+    scan_file.processing_status = ProcessingStatus.running
+    scan_file.completed_at = None
+    db.commit()
+
+
+def _persist_file_result(db: Session, result: FileProcessingResult) -> None:
+    scan_file = db.get(ScanFile, result.scan_file_id)
+    if scan_file is None:
+        logger.warning("Could not persist result for missing scan_file %s", result.scan_file_id)
+        return
+
+    scan_file.stage1_result = result.stage1_result
+    scan_file.stage2_attempted = result.stage2_attempted
+    scan_file.processing_status = result.processing_status
+    scan_file.error_message = result.error_message
+    if scan_file.started_at is None:
+        scan_file.started_at = datetime.now(timezone.utc)
+    scan_file.completed_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 def run_scan_pipeline(
@@ -717,12 +920,32 @@ def run_scan_pipeline(
         return []
 
     logger.info("Scan %s: starting LLM pipeline on %d files", scan_id, len(scan_files))
-    all_findings = asyncio.run(_run_pipeline_async(clone_path, scan_files))
-    db.flush()
 
-    suspicious_count = sum(1 for sf in scan_files if sf.stage1_result == Stage1Result.suspicious)
-    failed_count = sum(1 for sf in scan_files if sf.processing_status == ProcessingStatus.failed)
-    uncertain_count = sum(1 for sf in scan_files if (sf.error_message or "").startswith("Stage 2 uncertain:"))
+    all_findings: list[FindingResult] = []
+    suspicious_count = 0
+    failed_count = 0
+    uncertain_count = 0
+
+    def on_completed(result: FileProcessingResult) -> None:
+        nonlocal suspicious_count, failed_count, uncertain_count
+        _persist_file_result(db, result)
+        all_findings.extend(result.findings)
+        if result.stage1_result == Stage1Result.suspicious:
+            suspicious_count += 1
+        if result.processing_status == ProcessingStatus.failed:
+            failed_count += 1
+        if (result.error_message or "").startswith("Stage 2 uncertain:"):
+            uncertain_count += 1
+
+    asyncio.run(
+        _run_pipeline_async(
+            clone_path,
+            scan_files,
+            lambda scan_file_id: _mark_file_running(db, scan_file_id),
+            on_completed,
+        )
+    )
+
     logger.info(
         "Scan %s pipeline complete: %d files, %d suspicious, %d findings, %d uncertain, %d file failures",
         scan_id,

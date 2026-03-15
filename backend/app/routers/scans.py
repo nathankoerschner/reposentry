@@ -4,20 +4,27 @@ import json
 import logging
 import uuid
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models.enums import ScanStatus
+from app.models.enums import ProcessingStatus, ScanStatus
 from app.models.finding_occurrence import FindingOccurrence
 from app.models.repository import Repository
 from app.models.scan import Scan
 from app.models.scan_file import ScanFile
 from app.models.user import User
 from app.schemas.findings import FindingOccurrenceResponse
-from app.schemas.scans import ScanFileResponse, ScanResponse, ScanSummaryResponse
+from app.schemas.scans import (
+    ScanFileResponse,
+    ScanProgressResponse,
+    ScanResponse,
+    ScanSummaryResponse,
+)
 from app.services.github_deeplink import enrich_findings_with_deeplinks
 from app.services.severity_sorting import sort_occurrences_by_severity_desc
 
@@ -28,11 +35,7 @@ router = APIRouter(tags=["scans"])
 
 def _get_user_repository(db: Session, repository_id: uuid.UUID, user: User) -> Repository:
     """Helper – fetch repo owned by user or raise 404."""
-    repo = (
-        db.query(Repository)
-        .filter(Repository.id == repository_id, Repository.user_id == user.id)
-        .first()
-    )
+    repo = db.query(Repository).filter(Repository.id == repository_id, Repository.user_id == user.id).first()
     if not repo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
     return repo
@@ -57,12 +60,9 @@ def _notify_worker(scan_id: uuid.UUID) -> None:
 
 def _notify_worker_direct(scan_id: uuid.UUID) -> None:
     """Call the worker's /scan/direct endpoint for local development."""
-    import httpx
-
-    worker_url = getattr(settings, "worker_url", "http://localhost:8001")
     try:
         resp = httpx.post(
-            f"{worker_url}/scan/direct",
+            f"{settings.worker_url}/scan/direct",
             json={"scan_id": str(scan_id)},
             timeout=10,
         )
@@ -122,12 +122,7 @@ async def list_scans(
 ):
     """List scan history for a repository."""
     _get_user_repository(db, repository_id, user)
-    return (
-        db.query(Scan)
-        .filter(Scan.repository_id == repository_id)
-        .order_by(Scan.created_at.desc())
-        .all()
-    )
+    return db.query(Scan).filter(Scan.repository_id == repository_id).order_by(Scan.created_at.desc()).all()
 
 
 # ── Global scan endpoints ─────────────────────────────────────────────
@@ -165,6 +160,46 @@ async def get_scan_files(
     """Fetch file-level processing results for a scan."""
     _get_user_scan(db, scan_id, user)
     return db.query(ScanFile).filter(ScanFile.scan_id == scan_id).all()
+
+
+@router.get("/api/scans/{scan_id}/progress", response_model=ScanProgressResponse)
+async def get_scan_progress(
+    scan_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Fetch scan-wide progress counts and active file summaries."""
+    scan = _get_user_scan(db, scan_id, user)
+
+    grouped_rows = (
+        db.query(ScanFile.processing_status, func.count(ScanFile.id))
+        .filter(ScanFile.scan_id == scan_id)
+        .group_by(ScanFile.processing_status)
+        .all()
+    )
+    counts = {status: count for status, count in grouped_rows}
+
+    active_files = (
+        db.query(ScanFile)
+        .filter(ScanFile.scan_id == scan_id, ScanFile.processing_status == ProcessingStatus.running)
+        .order_by(ScanFile.started_at.asc().nullslast(), ScanFile.file_path.asc())
+        .limit(5)
+        .all()
+    )
+
+    findings_so_far = db.query(func.count(FindingOccurrence.id)).filter(FindingOccurrence.scan_id == scan_id).scalar() or 0
+
+    return ScanProgressResponse(
+        status=scan.status,
+        files_total=sum(counts.values()),
+        files_queued=counts.get(ProcessingStatus.queued, 0),
+        files_running=counts.get(ProcessingStatus.running, 0),
+        files_complete=counts.get(ProcessingStatus.complete, 0),
+        files_failed=counts.get(ProcessingStatus.failed, 0),
+        files_skipped=counts.get(ProcessingStatus.skipped, 0),
+        findings_so_far=findings_so_far,
+        active_files=active_files,
+    )
 
 
 @router.get("/api/scans/{scan_id}/findings", response_model=list[FindingOccurrenceResponse])

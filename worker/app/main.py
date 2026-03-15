@@ -34,6 +34,25 @@ _executor = ThreadPoolExecutor(max_workers=4)
 _in_flight: set[uuid.UUID] = set()
 
 
+def _submit_scan(scan_id: uuid.UUID) -> dict[str, str]:
+    """Deduplicate and dispatch a scan to the background executor."""
+    if scan_id in _in_flight:
+        logger.info("Scan %s already in flight, acknowledging duplicate", scan_id)
+        return {"status": "duplicate", "scan_id": str(scan_id)}
+
+    _in_flight.add(scan_id)
+    logger.info("Dispatching scan %s to worker thread", scan_id)
+
+    def _run_and_cleanup() -> None:
+        try:
+            execute_scan(scan_id)
+        finally:
+            _in_flight.discard(scan_id)
+
+    _executor.submit(_run_and_cleanup)
+    return {"status": "accepted", "scan_id": str(scan_id)}
+
+
 @app.get("/")
 async def root():
     return {"service": "zeropath-worker", "status": "ok"}
@@ -91,24 +110,7 @@ async def receive_scan_job(request: Request):
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid scan_id format")
 
-    # ── Dedup: reject if already processing ──────────────────────
-    if scan_id in _in_flight:
-        logger.info("Scan %s already in flight, acknowledging duplicate", scan_id)
-        return {"status": "duplicate", "scan_id": str(scan_id)}
-
-    # ── Dispatch to background thread ────────────────────────────
-    _in_flight.add(scan_id)
-    logger.info("Dispatching scan %s to worker thread", scan_id)
-
-    def _run_and_cleanup():
-        try:
-            execute_scan(scan_id)
-        finally:
-            _in_flight.discard(scan_id)
-
-    _executor.submit(_run_and_cleanup)
-
-    return {"status": "accepted", "scan_id": str(scan_id)}
+    return _submit_scan(scan_id)
 
 
 @app.post("/scan/direct")
@@ -131,21 +133,7 @@ async def receive_scan_direct(request: Request):
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid scan_id format")
 
-    if scan_id in _in_flight:
-        return {"status": "duplicate", "scan_id": str(scan_id)}
-
-    _in_flight.add(scan_id)
-    logger.info("Direct dispatch: scan %s", scan_id)
-
-    def _run_and_cleanup():
-        try:
-            execute_scan(scan_id)
-        finally:
-            _in_flight.discard(scan_id)
-
-    _executor.submit(_run_and_cleanup)
-
-    return {"status": "accepted", "scan_id": str(scan_id)}
+    return _submit_scan(scan_id)
 
 
 @app.on_event("shutdown")

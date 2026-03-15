@@ -17,6 +17,8 @@ class Stage1Result(str, enum.Enum):
 
 
 class ProcessingStatus(str, enum.Enum):
+    queued = "queued"
+    running = "running"
     complete = "complete"
     failed = "failed"
     skipped = "skipped"

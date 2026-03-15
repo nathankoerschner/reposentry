@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app.models.enums import ProcessingStatus
 from app.models.scan_file import ScanFile
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ def create_scan_file_records(
     """
     records: list[ScanFile] = []
     for path in file_paths:
-        sf = ScanFile(scan_id=scan_id, file_path=path)
+        sf = ScanFile(scan_id=scan_id, file_path=path, processing_status=ProcessingStatus.queued)
         db.add(sf)
         records.append(sf)
 

@@ -9,6 +9,7 @@ from app.schemas.findings import FindingOccurrenceResponse
 
 class ComparisonFinding(BaseModel):
     """A finding annotated with its comparison category."""
+
     category: str  # "new" | "fixed" | "persisting"
     occurrence: FindingOccurrenceResponse
 
