@@ -47,20 +47,11 @@ The main decisions were:
 1. **Separate API and worker services**  
    Scan execution is asynchronous and materially different from normal API traffic. Splitting the worker keeps long-running clone/LLM work away from request/response paths and makes queueing/concurrency easier to reason about.
 
-2. **Public GitHub repos only**  
-   This removes OAuth/app-install complexity, credential handling, and private-code security concerns so more time can go into the actual scanning and comparison workflow.
-
-3. **Python-only scope for v1**  
-   The challenge asked for a Python scanner. Restricting scope to `.py` files let me spend time on signal quality, structured outputs, scan comparison, and a usable workflow instead of building a broad but shallow multi-language parser.
-
-4. **Two-stage scanning instead of “analyze the whole repo at once”**  
+2. **Two-stage scanning instead of “analyze the whole repo at once”**  
    Large repos make whole-repo prompting expensive and brittle. I first classify files by security relevance, then spend deeper analysis budget only on files likely to matter.
 
-5. **Structured JSON everywhere at the LLM boundary**  
+3. **Structured JSON everywhere at the LLM boundary**  
    The worker only accepts machine-readable JSON from the model. This keeps persistence and UI logic deterministic even if model prose would otherwise be more natural.
-
-6. **Simple finding identity instead of premature complexity**  
-   Cross-scan stability is hard. For v1 I used a coarse fingerprint based on normalized file path + vulnerability type. It is imperfect, but easy to explain and good enough to power scan comparison on nearby commits.
 
 ## Architecture decisions and tradeoffs
 
@@ -248,41 +239,6 @@ This is intentionally coarse. It does **not** reliably handle:
 - reclassification when the model renames the vuln type between scans
 
 A stronger version would incorporate anchors such as code spans, AST locations, sink/source shape, or a learned canonicalization pass for vulnerability classes.
-
-## What I chose not to build and why
-
-These were conscious scope cuts, not oversights:
-
-- **Private repo support**  
-  Skipped because auth, installation, and secure cloning would take a lot of time and distract from scanner quality.
-
-- **Multi-language scanning**  
-  Skipped to stay focused on Python and the scan workflow.
-
-- **Traditional static taint analysis engine**  
-  Very valuable, but too large for this timebox. I chose an LLM-centered architecture with some guardrails instead.
-
-- **Cross-scan triage carry-forward**  
-  Triage is per occurrence today. Carrying state forward correctly depends on stronger finding identity than this v1 has.
-
-- **Incremental/diff-aware scanning**  
-  Every scan currently rescans the repo. Diff-aware execution would be one of the highest ROI improvements, but it was not necessary to prove the end-to-end workflow.
-
-- **Rich progress streaming / websockets**  
-  Polling was enough for v1 and simpler to ship.
-
-## Known limitations and deliberate shortcuts
-
-- Python files only
-- Public GitHub repos only
-- Default branch only
-- No full cross-file taint engine
-- No template/config/secret-file analysis beyond what may be referenced from Python context
-- LLM output can vary between runs
-- Finding identity is intentionally coarse
-- A worker crash can leave a scan in `running`
-- Scan execution is concurrent, but worker capacity is still a simple thread-pool configuration
-- Stage 2 is better grounded than a one-shot prompt, but still not a formal proof system
 
 ## What I would build next with another week
 
