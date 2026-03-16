@@ -5,7 +5,7 @@ from app.config import settings
 from app.routers import comparison, findings, health, repositories, scans
 
 app = FastAPI(
-    title="ZeroPath API",
+    title="RepoSentry API",
     version="0.1.0",
     description="LLM-powered Python security scanner platform",
 )
@@ -30,4 +30,4 @@ app.include_router(comparison.router)
 
 @app.get("/")
 async def root():
-    return {"service": "zeropath-api", "status": "ok"}
+    return {"service": "reposentry-api", "status": "ok"}

@@ -43,7 +43,7 @@ variable "db_tier" {
 variable "db_name" {
   description = "Postgres database name"
   type        = string
-  default     = "zeropath"
+  default     = "reposentry"
 }
 
 # ---- Secrets (passed as sensitive vars or via Secret Manager) ----

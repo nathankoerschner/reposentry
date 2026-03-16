@@ -21,7 +21,7 @@ export function Layout() {
           <div className="sidebar-logo-icon">
             <Shield size={16} />
           </div>
-          <span className="sidebar-logo-text">zeropath</span>
+          <span className="sidebar-logo-text">RepoSentry</span>
         </NavLink>
 
         <nav className="sidebar-nav">

@@ -1,13 +1,13 @@
 # ---- Service accounts ----
 
 resource "google_service_account" "backend" {
-  account_id   = "zeropath-backend"
-  display_name = "Zeropath API Service"
+  account_id   = "reposentry-backend"
+  display_name = "RepoSentry API Service"
 }
 
 resource "google_service_account" "worker" {
-  account_id   = "zeropath-worker"
-  display_name = "Zeropath Scanner Worker"
+  account_id   = "reposentry-worker"
+  display_name = "RepoSentry Scanner Worker"
 }
 
 # Grant backend the ability to publish to Pub/Sub
@@ -20,7 +20,7 @@ resource "google_pubsub_topic_iam_member" "backend_publish" {
 # ---- Cloud Run: API service ----
 
 resource "google_cloud_run_v2_service" "backend" {
-  name     = "zeropath-api"
+  name     = "reposentry-api"
   location = var.region
 
   template {
@@ -81,7 +81,7 @@ resource "google_cloud_run_v2_service" "backend" {
 
       env {
         name  = "CORS_ALLOWED_ORIGIN_REGEX"
-        value = "https://zeropath-frontend(?:-[a-z0-9]+)+(?:\\.[a-z0-9-]+)?\\.run\\.app"
+        value = "https://reposentry-frontend(?:-[a-z0-9]+)+(?:\\.[a-z0-9-]+)?\\.run\\.app"
       }
 
       env {
@@ -133,7 +133,7 @@ resource "google_cloud_run_v2_service_iam_member" "backend_public" {
 # ---- Cloud Run: Worker service ----
 
 resource "google_cloud_run_v2_service" "worker" {
-  name     = "zeropath-worker"
+  name     = "reposentry-worker"
   location = var.region
 
   template {
@@ -206,7 +206,7 @@ resource "google_cloud_run_v2_service" "worker" {
 # ---- Cloud Run: Frontend service ----
 
 resource "google_cloud_run_v2_service" "frontend" {
-  name     = "zeropath-frontend"
+  name     = "reposentry-frontend"
   location = var.region
 
   template {
@@ -245,7 +245,7 @@ resource "google_cloud_run_v2_service_iam_member" "frontend_public" {
 # ---- Construct DATABASE_URL secret ----
 
 resource "google_secret_manager_secret" "db_url" {
-  secret_id = "zeropath-database-url"
+  secret_id = "reposentry-database-url"
 
   replication {
     auto {}
@@ -281,4 +281,6 @@ resource "google_project_iam_member" "worker_cloudsql_client" {
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.worker.email}"
+}
+}
 }

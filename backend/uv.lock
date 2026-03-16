@@ -1482,7 +1482,7 @@ wheels = [
 ]
 
 [[package]]
-name = "zeropath-backend"
+name = "reposentry-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,4 +1,4 @@
-"""Pydantic schemas for ZeroPath API."""
+"""Pydantic schemas for RepoSentry API."""
 
 from app.schemas.comparison import ComparisonFinding, ComparisonResponse  # noqa: F401
 from app.schemas.findings import (  # noqa: F401

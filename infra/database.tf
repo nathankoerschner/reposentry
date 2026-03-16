@@ -1,7 +1,7 @@
 # ---- Cloud SQL (Postgres) ----
 
 resource "google_sql_database_instance" "postgres" {
-  name             = "zeropath-${var.environment}"
+  name             = "reposentry-${var.environment}"
   database_version = "POSTGRES_15"
   region           = var.region
 
@@ -35,7 +35,7 @@ resource "google_sql_database" "app" {
 }
 
 resource "google_sql_user" "app" {
-  name     = "zeropath"
+  name     = "reposentry"
   instance = google_sql_database_instance.postgres.name
   password = random_password.db_password.result
 }
@@ -48,13 +48,13 @@ resource "random_password" "db_password" {
 # ---- VPC for private Cloud SQL ----
 
 resource "google_compute_network" "vpc" {
-  name                    = "zeropath-vpc"
+  name                    = "reposentry-vpc"
   auto_create_subnetworks = true
   depends_on              = [google_project_service.apis]
 }
 
 resource "google_compute_global_address" "private_ip" {
-  name          = "zeropath-private-ip"
+  name          = "reposentry-private-ip"
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
   prefix_length = 16

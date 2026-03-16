@@ -30,7 +30,7 @@ db-revision:
 	cd backend && . .venv/bin/activate && alembic revision --autogenerate -m "$(msg)"
 
 # ---- Docker build ----
-REGISTRY ?= us-central1-docker.pkg.dev/$(GCP_PROJECT)/zeropath
+REGISTRY ?= us-central1-docker.pkg.dev/$(GCP_PROJECT)/reposentry
 TAG ?= latest
 
 docker-build:

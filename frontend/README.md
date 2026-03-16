@@ -1,6 +1,6 @@
 # Frontend
 
-React + Vite + TypeScript UI for ZeroPath.
+React + Vite + TypeScript UI for RepoSentry.
 
 ## Responsibilities
 - authenticate users with Clerk

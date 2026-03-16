@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Database
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/zeropath"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/reposentry"
 
     # Clerk
     clerk_secret_key: str = ""

@@ -5,14 +5,14 @@ class Settings(BaseSettings):
     """Worker settings loaded from environment variables."""
 
     # Database
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/zeropath"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/reposentry"
 
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
 
     # Scanner
-    clone_base_dir: str = "/tmp/zeropath-clones"
+    clone_base_dir: str = "/tmp/reposentry-clones"
     max_file_retries: int = 1
     max_concurrent_files: int = 3
     max_stage2_iterations: int = 2

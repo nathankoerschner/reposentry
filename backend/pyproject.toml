@@ -1,7 +1,7 @@
 [project]
-name = "zeropath-backend"
+name = "reposentry-backend"
 version = "0.1.0"
-description = "ZeroPath API service – LLM-powered Python security scanner"
+description = "RepoSentry API service – LLM-powered Python security scanner"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",

@@ -1,4 +1,4 @@
-"""ZeroPath Scanner Worker – receives Pub/Sub push messages and executes scans."""
+"""RepoSentry scanner worker – receives Pub/Sub push messages and executes scans."""
 
 import base64
 import json
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # ── App ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="ZeroPath Scanner Worker",
+    title="RepoSentry Scanner Worker",
     version="0.1.0",
     description="Receives Pub/Sub push messages and executes security scans",
 )
@@ -55,7 +55,7 @@ def _submit_scan(scan_id: uuid.UUID) -> dict[str, str]:
 
 @app.get("/")
 async def root():
-    return {"service": "zeropath-worker", "status": "ok"}
+    return {"service": "reposentry-worker", "status": "ok"}
 
 
 @app.get("/health")

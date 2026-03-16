@@ -1,4 +1,4 @@
-"""Shared enumerations for ZeroPath models."""
+"""Shared enumerations for RepoSentry models."""
 
 import enum
 

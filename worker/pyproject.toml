@@ -1,7 +1,7 @@
 [project]
-name = "zeropath-worker"
+name = "reposentry-worker"
 version = "0.1.0"
-description = "ZeroPath scanner worker – receives Pub/Sub push messages and runs scans"
+description = "RepoSentry scanner worker – receives Pub/Sub push messages and runs scans"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",

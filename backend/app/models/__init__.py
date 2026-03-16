@@ -1,4 +1,4 @@
-"""SQLAlchemy models for ZeroPath."""
+"""SQLAlchemy models for RepoSentry."""
 
 from app.models.finding_identity import FindingIdentity  # noqa: F401
 from app.models.finding_occurrence import FindingOccurrence  # noqa: F401

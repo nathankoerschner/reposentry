@@ -1006,7 +1006,7 @@ wheels = [
 ]
 
 [[package]]
-name = "zeropath-worker"
+name = "reposentry-worker"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

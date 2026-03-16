@@ -10,7 +10,7 @@ terraform {
 
   # Recommended: configure a remote backend for team use.
   # backend "gcs" {
-  #   bucket = "zeropath-tfstate"
+  #   bucket = "reposentry-tfstate"
   #   prefix = "terraform/state"
   # }
 }
@@ -42,8 +42,8 @@ resource "google_project_service" "apis" {
 
 resource "google_artifact_registry_repository" "images" {
   location      = var.region
-  repository_id = "zeropath"
+  repository_id = "reposentry"
   format        = "DOCKER"
-  description   = "Docker images for Zeropath services"
+  description   = "Docker images for RepoSentry services"
   depends_on    = [google_project_service.apis]
 }

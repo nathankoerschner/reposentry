@@ -31,7 +31,7 @@ async def _get_default_branch(owner: str, name: str) -> str | None:
     url = f"https://api.github.com/repos/{owner}/{name}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "zeropath-local-dev",
+        "User-Agent": "reposentry-local-dev",
     }
 
     try:

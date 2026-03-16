@@ -92,7 +92,7 @@ The frontend can be built with the included config so Vite build args are inject
 ```bash
 gcloud builds submit frontend \
   --config ../cloudbuild.frontend.yaml \
-  --substitutions=_IMAGE=us-central1-docker.pkg.dev/YOUR_PROJECT/zeropath/frontend:TAG,_VITE_CLERK_PUBLISHABLE_KEY=pk_...,_VITE_API_BASE_URL=https://YOUR_BACKEND_URL
+  --substitutions=_IMAGE=us-central1-docker.pkg.dev/YOUR_PROJECT/reposentry/frontend:TAG,_VITE_CLERK_PUBLISHABLE_KEY=pk_...,_VITE_API_BASE_URL=https://YOUR_BACKEND_URL
 ```
 
 ## 5. Point Terraform at the new images
@@ -114,9 +114,9 @@ curl https://YOUR_WORKER_URL/health
 You can also read logs with:
 
 ```bash
-gcloud run services logs read zeropath-api --region us-central1
-gcloud run services logs read zeropath-worker --region us-central1
-gcloud run services logs read zeropath-frontend --region us-central1
+gcloud run services logs read reposentry-api --region us-central1
+gcloud run services logs read reposentry-worker --region us-central1
+gcloud run services logs read reposentry-frontend --region us-central1
 ```
 
 ## 7. Clerk configuration

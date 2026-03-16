@@ -1,7 +1,7 @@
 # ---- Secret Manager ----
 
 resource "google_secret_manager_secret" "db_password" {
-  secret_id = "zeropath-db-password"
+  secret_id = "reposentry-db-password"
 
   replication {
     auto {}
@@ -16,7 +16,7 @@ resource "google_secret_manager_secret_version" "db_password" {
 }
 
 resource "google_secret_manager_secret" "clerk_secret_key" {
-  secret_id = "zeropath-clerk-secret-key"
+  secret_id = "reposentry-clerk-secret-key"
 
   replication {
     auto {}
@@ -31,7 +31,7 @@ resource "google_secret_manager_secret_version" "clerk_secret_key" {
 }
 
 resource "google_secret_manager_secret" "openai_api_key" {
-  secret_id = "zeropath-openai-api-key"
+  secret_id = "reposentry-openai-api-key"
 
   replication {
     auto {}
