@@ -87,4 +87,6 @@ jobs:
             --region "$GCP_REGION" \
             --format='value(status.url)')
           gcloud pubsub subscriptions update scan-jobs-worker-push \
-            --push-endpoint="$WORKER_URL/scan"
+            --push-endpoint="$WORKER_URL/scan" \
+            --push-auth-service-account="pubsub-invoker@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
+            --push-auth-token-audience="$WORKER_URL"

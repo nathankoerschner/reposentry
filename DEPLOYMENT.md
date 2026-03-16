@@ -125,5 +125,7 @@ In Clerk, allow the deployed frontend URL and configure redirect/callback URLs t
 ## Notes and cleanup items
 - Do not commit real secret values in `infra/terraform.tfvars`.
 - Terraform state is currently local unless you configure a remote backend.
-- The repo mentions a GitHub Actions deploy workflow, but deployment should be treated as manual unless that workflow and its secrets are fully configured.
+- Push-based deployment is defined in `.github/workflows/deploy.yml` and targets the currently provisioned Artifact Registry repository plus the backend, worker, and frontend Cloud Run services.
+- The workflow also refreshes the Pub/Sub push subscription with authenticated delivery to the worker using the `pubsub-invoker` service account.
+- The GitHub Actions workflow still requires repository secrets such as `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_SA_KEY`, and `CLERK_PUBLISHABLE_KEY` to be configured before pushes to `main` can deploy successfully.
 - Moving to GitHub OIDC + Workload Identity Federation would be safer than long-lived service account keys.
