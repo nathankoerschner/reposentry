@@ -20,18 +20,31 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TYPE processingstatus ADD VALUE IF NOT EXISTS 'queued'")
-    op.execute("ALTER TYPE processingstatus ADD VALUE IF NOT EXISTS 'running'")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_columns = {column["name"] for column in inspector.get_columns("scan_files")}
 
-    op.add_column("scan_files", sa.Column("started_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("scan_files", sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True))
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE processingstatus ADD VALUE IF NOT EXISTS 'queued'")
+        op.execute("ALTER TYPE processingstatus ADD VALUE IF NOT EXISTS 'running'")
+
+    if "started_at" not in existing_columns:
+        op.add_column("scan_files", sa.Column("started_at", sa.DateTime(timezone=True), nullable=True))
+    if "completed_at" not in existing_columns:
+        op.add_column("scan_files", sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True))
 
     op.execute("UPDATE scan_files SET processing_status = 'queued' WHERE processing_status IS NULL")
 
 
 def downgrade() -> None:
-    op.drop_column("scan_files", "completed_at")
-    op.drop_column("scan_files", "started_at")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_columns = {column["name"] for column in inspector.get_columns("scan_files")}
+
+    if "completed_at" in existing_columns:
+        op.drop_column("scan_files", "completed_at")
+    if "started_at" in existing_columns:
+        op.drop_column("scan_files", "started_at")
 
     op.execute("UPDATE scan_files SET processing_status = 'skipped' WHERE processing_status IN ('queued', 'running')")
     op.execute("ALTER TABLE scan_files ALTER COLUMN processing_status TYPE text USING processing_status::text")
